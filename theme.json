@@ -25,5 +25,7 @@
     "youtube_category": "28",
     "hashtags": ["#science", "#whatif", "#facts", "#shorts"],
     "privacy": "public",
-    "ai_disclosure": true
+    "ai_disclosure": true,
+    "publish_time": "18:00",
+    "publish_timezone": "America/New_York"
   }

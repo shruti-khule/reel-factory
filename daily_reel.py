@@ -4,16 +4,16 @@ AI writes a hooky ~25-second script (natural 8-14 word sentences, calm closing l
 → visuals are allocated by speaking time, one per clip (Cloudflare FLUX images +
 trimmed Pixabay clips) → MoneyPrinterTurbo adds voice and captions → ffmpeg adds
 background music, an outro (last frame fades to black while the music fades to
-silence) and on-screen hook text → YouTube (+ Instagram). After each render the
-real speaking speed is measured so the next script lands closer to the target length.
+silence) and on-screen hook text → YouTube (scheduled publish) + Instagram.
 
 Usage:
-  python daily_reel.py              # full run with upload
+  python daily_reel.py              # full run with upload (safe to run several times a day)
   python daily_reel.py --no-upload  # test run, no posting
-Rerunning on the same day reuses today's plan and visuals
+Rerunning on the same day reuses today's plan, visuals and finished video
 (delete work/<date>/ to start the day fresh).
 """
 import base64, datetime, json, math, os, pathlib, random, shutil, subprocess, sys, time
+from zoneinfo import ZoneInfo
 import requests
 from dotenv import load_dotenv
 from google import genai
@@ -48,6 +48,13 @@ def log(msg):
     print(line, flush=True)
     with open(ROOT / "reel.log", "a", encoding="utf-8") as f:
         f.write(line + "\n")
+
+
+def notify(msg):
+    """macOS notification, so you only need to look when something went wrong."""
+    subprocess.run(["osascript", "-e",
+                    f'display notification {json.dumps(msg)} with title {json.dumps(T["channel"])}'],
+                   capture_output=True)
 
 
 def clip_seconds():
@@ -485,13 +492,22 @@ def add_outro(video, song):
 
 # ---------- 3c. On-screen hook text ----------
 def add_hook(video, hook):
+    """Big hook text for the first seconds: drawn with Pillow, overlaid with ffmpeg
+    (works even when ffmpeg was built without the drawtext filter)."""
     if not hook:
         return video
-    font = next((f for f in ("/System/Library/Fonts/Supplemental/Arial Black.ttf",
-                             "/System/Library/Fonts/Supplemental/Arial Bold.ttf") if os.path.exists(f)), None)
-    if not font:
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        log("Pillow not installed (pip install pillow), skipping hook text")
+        return video
+    font_path = next((f for f in ("/System/Library/Fonts/Supplemental/Arial Black.ttf",
+                                  "/System/Library/Fonts/Supplemental/Arial Bold.ttf")
+                      if os.path.exists(f)), None)
+    if not font_path:
         log("No bold font found, skipping hook text")
         return video
+
     lines, cur = [], ""
     for w in hook.upper().split():                     # wrap to ~14 characters per line
         if cur and len(cur) + len(w) + 1 > 14:
@@ -501,13 +517,37 @@ def add_hook(video, hook):
             cur = f"{cur} {w}".strip()
     if cur:
         lines.append(cur)
-    txt = WORK / "hook.txt"
-    txt.write_text("\n".join(lines), encoding="utf-8")
+
+    r = subprocess.run([FFPROBE, "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height", "-of", "csv=p=0", str(video)],
+                       capture_output=True, text=True)
+    try:
+        vw, vh = map(int, r.stdout.strip().split(",")[:2])
+    except ValueError:
+        log("Could not read video size, skipping hook text")
+        return video
+
+    size = round(vw * 100 / 1080)                      # 100 px at 1080 wide
+    stroke = max(4, round(size * 0.09))
+    font = ImageFont.truetype(font_path, size)
+    ascent, descent = font.getmetrics()
+    line_h = ascent + descent + round(size * 0.14)
+    img = Image.new("RGBA", (vw, vh), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    y = round(vh * 0.13)
+    for line in lines:
+        left, _, right, _ = draw.textbbox((0, 0), line, font=font, stroke_width=stroke)
+        draw.text(((vw - (right - left)) / 2 - left, y), line, font=font, fill="white",
+                  stroke_width=stroke, stroke_fill="black")
+        y += line_h
+    png = WORK / "hook.png"
+    img.save(png)
+
     tmp = video.with_name(video.stem + "_hook.mp4")
-    vf = (f"drawtext=textfile='{txt}':fontfile='{font}':fontsize=100:fontcolor=white:"
-          f"borderw=9:bordercolor=black:line_spacing=14:x=(w-text_w)/2:y=h*0.13:"
-          f"enable='lt(t,{T.get('hook_seconds', 3)})'")
-    r = subprocess.run([FFMPEG, "-y", "-i", str(video), "-vf", vf, "-c:a", "copy",
+    secs = T.get("hook_seconds", 3)
+    r = subprocess.run([FFMPEG, "-y", "-i", str(video), "-i", str(png), "-filter_complex",
+                        f"[0:v][1:v]overlay=0:0:enable='lt(t,{secs})'[v]",
+                        "-map", "[v]", "-map", "0:a", "-c:a", "copy",
                         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", str(tmp)],
                        capture_output=True, text=True)
     if r.returncode != 0:
@@ -519,6 +559,24 @@ def add_hook(video, hook):
 
 
 # ---------- 4a. YouTube ----------
+def youtube_status():
+    """Schedule the video for publish_time (in publish_timezone) if that is still ahead today."""
+    status = {"selfDeclaredMadeForKids": False,
+              "containsSyntheticMedia": T.get("ai_disclosure", True)}
+    when = T.get("publish_time")
+    if when:
+        tz = ZoneInfo(T.get("publish_timezone", "America/New_York"))
+        h, m = map(int, when.split(":"))
+        now = datetime.datetime.now(tz)
+        at = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if at > now + datetime.timedelta(minutes=15):
+            status["privacyStatus"] = "private"          # required for scheduled videos
+            status["publishAt"] = at.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return status, f"scheduled for {at:%Y-%m-%d %H:%M} {tz.key}"
+    status["privacyStatus"] = T.get("privacy", "public")
+    return status, status["privacyStatus"]
+
+
 def upload_youtube(video, ep):
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
@@ -532,21 +590,22 @@ def upload_youtube(video, ep):
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            if not sys.stdin.isatty():
+                raise RuntimeError("YouTube login needed: run 'python daily_reel.py' once in Terminal")
             creds = InstalledAppFlow.from_client_secrets_file(
                 str(ROOT / "client_secret.json"), scopes).run_local_server(port=0)
         tok.write_text(creds.to_json())
     yt = build("youtube", "v3", credentials=creds)
+    status, label = youtube_status()
     body = {
         "snippet": {"title": f"{ep['title']} #shorts"[:100],
                     "description": f"{ep['description']}\n\n{' '.join(T['hashtags'])}",
                     "categoryId": T["youtube_category"]},
-        "status": {"privacyStatus": T.get("privacy", "public"),
-                   "selfDeclaredMadeForKids": False,
-                   "containsSyntheticMedia": T.get("ai_disclosure", True)},
+        "status": status,
     }
     res = yt.videos().insert(part="snippet,status", body=body,
                              media_body=MediaFileUpload(str(video), resumable=True)).execute()
-    log(f"YouTube ({T.get('privacy', 'public')}): https://youtube.com/shorts/{res['id']}")
+    log(f"YouTube ({label}): https://youtube.com/shorts/{res['id']}")
 
 
 # ---------- 4b. Instagram (optional) ----------
@@ -602,16 +661,23 @@ def upload_instagram(video, ep):
 
 
 # ---------- housekeeping ----------
-def cleanup(days=7):
-    cutoff = time.time() - days * 86400
+def cleanup(work_days=7, output_days=30):
+    now = time.time()
     for d in (ROOT / "work").iterdir():
-        if d.is_dir() and d.stat().st_mtime < cutoff:
+        if d.is_dir() and d.stat().st_mtime < now - work_days * 86400:
             shutil.rmtree(d, ignore_errors=True)
+    for f in OUT.glob("*.mp4"):
+        if f.stat().st_mtime < now - output_days * 86400:
+            f.unlink(missing_ok=True)
 
 
 # ---------- main ----------
 if __name__ == "__main__":
     history = json.loads(HIST.read_text(encoding="utf-8")) if HIST.exists() else []
+    uploading = "--no-upload" not in sys.argv
+    if uploading and any(h.get("date") == TODAY for h in history):
+        log("Already posted today, nothing to do")
+        sys.exit(0)
     try:
         plan_file = WORK / "plan.json"
         if plan_file.exists():
@@ -622,38 +688,48 @@ if __name__ == "__main__":
             log(f"Episode ({ep['format']}): {ep['title']}  |  hook: {ep.get('hook_text')}")
             plan_file.write_text(json.dumps(ep, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        files = make_visuals(ep["shots"])
-        ensure_mpt()
-        song = pick_song()
+        video = OUT / f"{TODAY}.mp4"
+        if ep.get("video_done") and video.exists():
+            log(f"Reusing today's finished video: {video}")
+        else:
+            files = make_visuals(ep["shots"])
+            ensure_mpt()
+            song = pick_song()
+            voices = [T["voice"]] + T.get("fallback_voices", [])
+            for attempt in range(4):
+                T["voice"] = voices[attempt % len(voices)]
+                try:
+                    video = render(ep, files, own_music=song is not None)
+                    break
+                except RuntimeError as e:
+                    if "audio" in str(e) and attempt < 3:
+                        log(f"Voice failed ({T['voice']}), retrying in 3 minutes with next voice")
+                        time.sleep(180)
+                    else:
+                        raise
+            calibrate(video, ep["narration"])            # measure before the outro adds time
+            video = add_outro(video, song)
+            video = add_hook(video, ep.get("hook_text"))
+            ep["video_done"] = True
+            plan_file.write_text(json.dumps(ep, indent=2, ensure_ascii=False), encoding="utf-8")
+            log(f"Rendered: {video}")
 
-        voices = [T["voice"]] + T.get("fallback_voices", [])
-        video = None
-        for attempt in range(4):
-            T["voice"] = voices[attempt % len(voices)]
-            try:
-                video = render(ep, files, own_music=song is not None)
-                break
-            except RuntimeError as e:
-                if "audio" in str(e) and attempt < 3:
-                    log(f"Voice failed ({T['voice']}), retrying in 3 minutes with next voice")
-                    time.sleep(180)
-                else:
-                    raise
-        calibrate(video, ep["narration"])                # measure before the outro adds time
-        video = add_outro(video, song)
-        video = add_hook(video, ep.get("hook_text"))
-        log(f"Rendered: {video}")
-
-        if "--no-upload" in sys.argv:
+        if not uploading:
             log("Test run: upload skipped")
         else:
-            for up in (upload_youtube, upload_instagram):
-                try:
-                    up(video, ep)
-                except Exception as e:
-                    log(f"{up.__name__} failed: {str(e)[:300]}")
+            try:
+                upload_youtube(video, ep)
+            except Exception as e:                       # not marked as posted → next run retries
+                raise RuntimeError(f"YouTube upload failed: {str(e)[:300]}")
+            try:
+                upload_instagram(video, ep)
+            except Exception as e:
+                log(f"Instagram failed: {str(e)[:300]}")
+                notify("Instagram upload failed – see reel.log")
             history.append({"date": TODAY, "title": ep["title"], "format": ep["format"]})
             HIST.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+            notify(f"Posted: {ep['title']}")
         cleanup()
     except Exception as e:
         log(f"FAILED: {e}")
+        notify(f"Daily reel failed: {str(e)[:120]}")
