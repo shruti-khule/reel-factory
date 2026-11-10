@@ -1,0 +1,29 @@
+{
+    "channel": "What If Lab",
+    "niche": "mind-blowing science facts and 'what would happen if' scenarios about the human body, space, Earth, animals and nature",
+    "audience": "curious 16-35 year olds who scroll fast",
+    "tone": "fast, punchy, amazed, slightly dramatic, strictly factual",
+    "formats": [
+      "What would happen if ... (escalating consequences, worst one last)",
+      "3 facts about ... that sound fake but are true (craziest one last)",
+      "Timeline: what happens to ... second by second (or year by year)",
+      "Ranking: 5 ... from least to most extreme",
+      "The real reason ... (common myth vs. surprising truth)"
+    ],
+    "art_style": "cinematic 3D animated render, dramatic high-contrast lighting, vivid saturated colors, epic sense of scale, sharp focus, highly detailed",
+    "mascot": "",
+    "ai_share": 0.8,
+    "banned_visuals": ["text", "letters", "numbers", "logos", "real celebrities", "gore"],
+    "target_seconds": 24,
+    "clip_seconds": 2,
+    "voice": "en-US-GuyNeural-Male",
+    "fallback_voices": ["en-US-ChristopherNeural-Male", "en-US-AndrewNeural-Male"],
+    "voice_rate": 1.1,
+    "hook_seconds": 3,
+    "bgm_volume": 0.2,
+    "outro_seconds": 1.5,
+    "youtube_category": "28",
+    "hashtags": ["#science", "#whatif", "#facts", "#shorts"],
+    "privacy": "public",
+    "ai_disclosure": true
+  }

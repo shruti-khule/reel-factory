@@ -1,0 +1,13 @@
+.history
+.env
+.venv/
+token.json
+client_secret.json
+ig_token.json
+work/
+output/
+*.log
+history.json
+calibration.json
+__pycache__/
+.DS_Store
