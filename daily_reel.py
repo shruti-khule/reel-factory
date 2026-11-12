@@ -363,12 +363,20 @@ def mpt_up():
     except (requests.RequestException, ValueError):
         return False
 
+def find_uv():
+    """uv lives in different places depending on how it was installed; launchd's PATH is minimal."""
+    for p in (os.getenv("UV_PATH"), shutil.which("uv"),
+              os.path.expanduser("~/.local/bin/uv"), os.path.expanduser("~/.cargo/bin/uv"),
+              "/opt/homebrew/bin/uv", "/usr/local/bin/uv"):
+        if p and os.path.exists(p):
+            return p
+    raise RuntimeError("uv not found: run 'which uv' in Terminal and add UV_PATH=<that path> to .env")
 
 def ensure_mpt():
     if mpt_up():
         return
     log("Starting MoneyPrinterTurbo API ...")
-    uv = shutil.which("uv") or "/opt/homebrew/bin/uv"
+    uv = find_uv()
     logf = open(ROOT / "mpt_api.log", "a")
     subprocess.Popen([uv, "run", "python", "main.py"], cwd=MPT_DIR,
                      stdout=logf, stderr=subprocess.STDOUT)
